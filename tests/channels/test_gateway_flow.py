@@ -419,3 +419,47 @@ def test_desconectada_por_timeout_se_recupera_se_o_login_existe(env, api):
     env.bridge.logins[proc["user"]] = ["5562999990000.0"]
     r = api.get(f"/internal/channels/connections/{c['id']}?account_id=1").json()
     assert r["state"] == "connected"
+
+
+# --- mídia: nota de voz de saída e download do que chegou (16/11) ------------------
+
+
+async def test_matrix_sender_manda_audio_como_nota_de_voz(env, api):
+    import base64
+
+    import httpx
+
+    from app.channels.models import Attachment, ConnectionCtx
+
+    c = _connected(api, env)
+    row = store.get_connection_row(c["id"], 1)
+    pedidos = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        pedidos.append(req)
+        if "/media/v3/upload" in req.url.path:
+            return httpx.Response(200, json={"content_uri": "mxc://test.local/abc"})
+        return httpx.Response(200, json={"event_id": f"$e{len(pedidos)}"})
+
+    s = appservice.MatrixSender(transport=httpx.MockTransport(h))
+    ctx = ConnectionCtx(id=row["id"], account_id=1, provider="whatsapp", matrix_user=row["matrix_user"])
+    voz = Attachment(kind="audio", mime="audio/ogg", url="data:audio/ogg;base64," + base64.b64encode(b"OggS-falso").decode(), duration_ms=4100)
+    ev = await s(ctx, "t1", "", [voz], None)
+    assert ev == "$e2" and len(pedidos) == 2
+    assert pedidos[0].content == b"OggS-falso"
+    corpo = json.loads(pedidos[1].content)
+    assert corpo["msgtype"] == "m.audio" and corpo["url"] == "mxc://test.local/abc"
+    assert "org.matrix.msc3245.voice" in corpo and corpo["info"]["duration"] == 4100
+
+
+async def test_media_so_da_propria_conexao(env, api, monkeypatch):
+    c = _connected(api, env)
+
+    async def falso(mxc, user_id, transport=None):
+        return b"audio", "audio/ogg"
+
+    monkeypatch.setattr(appservice, "baixar_midia", falso)
+    r = api.get(f"/internal/channels/connections/{c['id']}/media", params={"account_id": 1, "mxc": "mxc://x/y"})
+    assert r.status_code == 200 and r.content == b"audio"
+    r = api.get(f"/internal/channels/connections/{c['id']}/media", params={"account_id": 2, "mxc": "mxc://x/y"})
+    assert r.status_code == 404

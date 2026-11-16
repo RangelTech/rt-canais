@@ -104,6 +104,7 @@ class Attachment(BaseModel):
     mime: str = ""
     name: str = ""
     url: str
+    duration_ms: int | None = None  # áudio: duração (nota de voz)
 
 
 class InboundMessage(BaseModel):

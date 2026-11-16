@@ -340,6 +340,24 @@ async def send(cid: str, body: SendIn, gw: Gateway = Depends(get_gateway)):
         raise _guard(exc) from exc
 
 
+@router.get("/connections/{cid}/media", dependencies=[Depends(require_token)])
+async def media(cid: str, account_id: int, mxc: str):
+    """O produto baixa a mídia que chegou (ex.: áudio do cliente para transcrever). Só da própria conexão."""
+    from fastapi import Response
+
+    from app.channels.appservice import baixar_midia
+    from app.channels.providers.base import ProviderError
+
+    row = store.get_connection_row(cid, account_id)
+    if not row or not row.get("matrix_user"):
+        raise HTTPException(404, "connection_not_found")
+    try:
+        dados, tipo = await baixar_midia(mxc, row["matrix_user"])
+    except ProviderError as exc:
+        raise HTTPException(502, exc.error_code) from exc
+    return Response(dados, media_type=tipo)
+
+
 @router.post("/connections/{cid}/sync", status_code=202, dependencies=[Depends(require_token)])
 def sync(cid: str, body: SyncIn):
     row = store.get_connection_row(cid, body.account_id)

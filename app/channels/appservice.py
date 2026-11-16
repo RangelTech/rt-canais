@@ -208,6 +208,13 @@ class MatrixSender:
         room = store.room_for_conversation(conn.id, conversation_ref)
         if not room:
             raise ProviderError("provider_unavailable", "sala nao mapeada")
+        ultimo = ""
+        for att in attachments or []:  # mídia primeiro (nota de voz, imagem); o texto, se houver, vai depois
+            ultimo = await self._enviar_midia(conn, room, att)
+        if not text:
+            if not ultimo:
+                raise ProviderError("provider_unavailable", "mensagem vazia")
+            return ultimo
         content: dict[str, Any] = {"msgtype": "m.text", "body": text}
         if reply_to:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
@@ -229,3 +236,70 @@ class MatrixSender:
         if resp.status_code >= 400:
             raise ProviderError("provider_unavailable", str(resp.status_code))
         return resp.json()["event_id"]
+
+    async def _enviar_midia(self, conn: ConnectionCtx, room: str, att: Attachment) -> str:
+        """Sobe a mídia no Synapse como o usuário da conexão e manda na sala. Áudio vai como NOTA DE VOZ
+        (MSC3245): a ponte do WhatsApp entrega como áudio gravado (PTT), não como arquivo."""
+        dados = await _baixar_anexo(att.url, self._transport)
+        mime = att.mime or ("audio/ogg" if att.kind == "audio" else "application/octet-stream")
+        nome = att.name or {"audio": "voz.ogg", "image": "imagem.jpg", "video": "video.mp4"}.get(att.kind, "arquivo")
+        h = {"Authorization": f"Bearer {settings.matrix_as_token}"}
+        base = settings.matrix_homeserver_url
+        try:
+            async with httpx.AsyncClient(transport=self._transport, timeout=60) as http:
+                up = await http.post(f"{base}/_matrix/media/v3/upload", params={"user_id": conn.matrix_user, "filename": nome},
+                                     content=dados, headers={**h, "Content-Type": mime})
+                if up.status_code >= 400:
+                    raise ProviderError("provider_unavailable", f"upload {up.status_code}")
+                mxc = up.json()["content_uri"]
+                tipo = {"audio": "m.audio", "image": "m.image", "video": "m.video"}.get(att.kind, "m.file")
+                content: dict[str, Any] = {"msgtype": tipo, "body": nome, "url": mxc, "info": {"mimetype": mime, "size": len(dados)}}
+                if att.kind == "audio":
+                    ms = int(att.duration_ms or 0)
+                    content["info"]["duration"] = ms
+                    content["org.matrix.msc1767.audio"] = {"duration": ms}
+                    content["org.matrix.msc3245.voice"] = {}
+                r = await http.put(f"{base}/_matrix/client/v3/rooms/{room}/send/m.room.message/{secrets.token_hex(8)}",
+                                   params={"user_id": conn.matrix_user}, json=content, headers=h)
+        except httpx.HTTPError as exc:
+            raise ProviderError("provider_unavailable") from exc
+        if r.status_code >= 400:
+            raise ProviderError("provider_unavailable", str(r.status_code))
+        return r.json()["event_id"]
+
+
+MAX_ANEXO = 16 * 1024 * 1024
+
+
+async def _baixar_anexo(url: str, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
+    """data:...;base64 (o produto manda o áudio pronto) ou http(s) interno. mxc:// não entra aqui."""
+    if url.startswith("data:"):
+        import base64
+        cab, _, corpo = url.partition(",")
+        dados = base64.b64decode(corpo) if ";base64" in cab else corpo.encode()
+    elif url.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(transport=transport, timeout=60) as http:
+            r = await http.get(url)
+        if r.status_code >= 400:
+            raise ProviderError("provider_unavailable", f"anexo {r.status_code}")
+        dados = r.content
+    else:
+        raise ProviderError("provider_unavailable", "anexo sem URL valida")
+    if len(dados) > MAX_ANEXO:
+        raise ProviderError("provider_unavailable", "anexo grande demais")
+    return dados
+
+
+async def baixar_midia(mxc: str, user_id: str, transport: httpx.AsyncBaseTransport | None = None) -> tuple[bytes, str]:
+    """Mídia recebida (mxc://servidor/id) baixada do Synapse como o usuário da conexão."""
+    if not mxc.startswith("mxc://"):
+        raise ProviderError("provider_unavailable", "mxc invalido")
+    servidor, _, mid = mxc[6:].partition("/")
+    async with httpx.AsyncClient(transport=transport, timeout=60) as http:
+        r = await http.get(f"{settings.matrix_homeserver_url}/_matrix/client/v1/media/download/{servidor}/{mid}",
+                           params={"user_id": user_id}, headers={"Authorization": f"Bearer {settings.matrix_as_token}"})
+    if r.status_code >= 400:
+        raise ProviderError("provider_unavailable", f"midia {r.status_code}")
+    if len(r.content) > MAX_ANEXO:
+        raise ProviderError("provider_unavailable", "midia grande demais")
+    return r.content, r.headers.get("content-type", "application/octet-stream")
