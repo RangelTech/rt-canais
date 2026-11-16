@@ -24,7 +24,7 @@ from app.config import settings
 GHOST_PREFIX = "@"  # fantasmas das bridges: o remetente real e quem NAO e o usuario Luar
 
 
-def _event_to_message(event: dict[str, Any], binding: dict, conn: dict) -> InboundMessage | None:
+def _event_to_message(event: dict[str, Any], binding: dict, conn: dict, nome: str = "") -> InboundMessage | None:
     if event.get("type") != "m.room.message":
         return None
     content = event.get("content", {})
@@ -38,8 +38,9 @@ def _event_to_message(event: dict[str, Any], binding: dict, conn: dict) -> Inbou
     ):
         return None
     sender = event.get("sender", "")
-    # Mensagem enviada pelo proprio usuario Luar (puppet) = eco/saida; ghost = contato.
-    direction = "outgoing_echo" if sender == conn["matrix_user"] else "incoming"
+    # Saida = usuario Luar (puppet) OU o ghost da propria conta na rede (mensagem que o dono mandou pelo celular).
+    proprio = ghost_id(sender) is not None and ghost_id(sender) == str(conn.get("gateway_login_id") or "")
+    direction = "outgoing_echo" if sender == conn["matrix_user"] or proprio else "incoming"
     ts = datetime.fromtimestamp(event.get("origin_server_ts", 0) / 1000, UTC)
     atts: list[Attachment] = []
     mt = content.get("msgtype")
@@ -58,7 +59,7 @@ def _event_to_message(event: dict[str, Any], binding: dict, conn: dict) -> Inbou
         contact_external_id=sender
         if direction == "incoming"
         else binding["conversation_external_id"],
-        contact_name=content.get("fi.mau.displayname", ""),
+        contact_name=content.get("fi.mau.displayname", "") or (nome or ""),
         message_external_id=event["event_id"],
         direction=direction,
         text="" if atts else content.get("body", ""),
@@ -71,6 +72,9 @@ def _event_to_message(event: dict[str, Any], binding: dict, conn: dict) -> Inbou
 _GHOST_RE = re.compile(r"^@(?:instagram|messenger|whatsapp)_(?P<id>[^:]+):")
 _LUAR_USER_RE = re.compile(r"^@luar_t(?P<acct>\d+)_c(?P<conn>[0-9a-f]+):")
 _BRIDGE_STATE_TYPES = ("m.bridge", "uk.half-shot.bridge")
+
+
+_NOMES: dict[str, str] = {}  # cache mxid do ghost -> nome de exibicao
 
 
 def ghost_id(mxid: str) -> str | None:
@@ -114,6 +118,16 @@ class MatrixHS:
     async def join(self, mxid: str, room_id: str) -> bool:
         resp = await self._call("POST", f"/join/{quote(room_id, safe='')}", mxid, {})
         return resp.status_code < 400
+
+    async def displayname(self, mxid: str, quem: str) -> str:
+        """Nome de exibicao de um ghost (contato) no homeserver; vazio se nao achar."""
+        if quem in _NOMES:
+            return _NOMES[quem]
+        resp = await self._call("GET", f"/profile/{quote(quem, safe='')}/displayname", mxid)
+        nome = str((resp.json() if resp.status_code < 400 else {}).get("displayname") or "")
+        if nome:
+            _NOMES[quem] = nome
+        return nome
 
     async def room_info(self, mxid: str, room_id: str) -> tuple[str, str]:
         """(id da conversa no provedor, nome do contato); vazios se a sala nao e um portal."""
@@ -170,16 +184,24 @@ async def handle_transaction(gateway: Any, txn_id: str, events: list[dict[str, A
         binding = store.room_binding(room) if room else None
         if not binding:
             continue
-        if not binding["conversation_external_id"]:
-            gid = ghost_id(event.get("sender", ""))
-            if not gid:
-                continue  # sala de gerenciamento, ou contato ainda nao entrou
-            store.set_room_conversation(room, gid)
-            binding = {**binding, "conversation_external_id": gid}
         conn = store.get_connection_row(binding["connection_id"], binding["account_id"])
         if not conn:
             continue
-        msg = _event_to_message(event, binding, conn)
+        sender = event.get("sender", "")
+        if not binding["conversation_external_id"]:
+            gid = ghost_id(sender)
+            if not gid or gid == str(conn.get("gateway_login_id") or ""):
+                continue  # sala de gerenciamento, contato ainda nao entrou, ou o ghost e o proprio dono
+            store.set_room_conversation(room, gid)
+            binding = {**binding, "conversation_external_id": gid}
+        nome = ""
+        matrix = getattr(gateway, "matrix", None)
+        if matrix is not None and ghost_id(sender) and ghost_id(sender) != str(conn.get("gateway_login_id") or ""):
+            try:
+                nome = await matrix.displayname(conn["matrix_user"], sender)
+            except Exception:  # noqa: BLE001
+                nome = ""
+        msg = _event_to_message(event, binding, conn, nome)
         if msg and await gateway.inbound(msg):
             delivered += 1
     return {"duplicate": False, "delivered": delivered}
