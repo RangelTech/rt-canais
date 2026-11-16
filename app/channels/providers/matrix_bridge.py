@@ -35,7 +35,7 @@ ALLOWED_FLOWS = {
 QR_TTL_S = 20
 
 _ERRCODE_MAP = {
-    "FI.MAU.META_CAA_FAILED": "provider_unavailable",  # falha do fluxo da rede (16/11: CAA 404), não da senha
+    "FI.MAU.META_CAA_FAILED": "wrong_password",
     "FI.MAU.META_UNSUPPORTED_CAA_STEP": "unsupported_step",
     "FI.MAU.META_CAA_CLIENT_HTTP_FAILED": "provider_unavailable",
     "FI.MAU.IG_MISSING_AUTH": "wrong_password",
