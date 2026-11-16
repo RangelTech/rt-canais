@@ -397,3 +397,25 @@ def test_nenhum_segredo_no_banco_auditoria_ou_respostas(env, api):
             dump += str(conn.execute(f"SELECT * FROM {t}").fetchall())
     assert "SenhaSuperSecreta1" not in dump
     assert "ana" not in str(store.count_login_attempts) and "'ana'" not in dump
+
+
+def test_qr_concluido_entre_esperas_vira_conectado(env, api):
+    """16/11: o celular pareou, o bridge concluiu e apagou o processo antes da espera seguinte do
+    gateway; a consulta tomou 404 "login not found" e a conexao ficava desconectada por timeout."""
+    c = connect(api, provider="whatsapp")
+    pid, proc = next(iter(env.bridge.procs.items()))
+    env.bridge.logins[proc["user"]] = ["5562999990000.0"]
+    del env.bridge.procs[pid]
+    r = api.get(f"/internal/channels/connections/{c['id']}?account_id=1").json()
+    assert r["state"] == "connected"
+
+
+def test_desconectada_por_timeout_se_recupera_se_o_login_existe(env, api):
+    c = connect(api, provider="whatsapp")
+    pid, proc = next(iter(env.bridge.procs.items()))
+    del env.bridge.procs[pid]
+    r = api.get(f"/internal/channels/connections/{c['id']}?account_id=1").json()
+    assert r["state"] == "disconnected"
+    env.bridge.logins[proc["user"]] = ["5562999990000.0"]
+    r = api.get(f"/internal/channels/connections/{c['id']}?account_id=1").json()
+    assert r["state"] == "connected"

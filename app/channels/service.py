@@ -228,7 +228,13 @@ class Gateway:
                 return self._apply(row, view)
             except ProviderError as exc:
                 row = self._set_state(row, State.DISCONNECTED, exc.error_code)
-        health = await self._adapter(row["provider"]).health(_ctx(row))
+        adapter = self._adapter(row["provider"])
+        if State(row["state"]) == State.DISCONNECTED and not row.get("gateway_login_id") and hasattr(adapter, "recover"):
+            achado = await adapter.recover(_ctx(row))  # login concluido que o gateway nao viu: recupera
+            if achado:
+                row = self._set_state(row, State.PENDING_AUTH, "")  # DISCONNECTED -> CONNECTED so via PENDING_AUTH
+                return self._apply(row, StepView(state=State.CONNECTED, step=Step(step_id="", kind="complete"), login_id=achado))
+        health = await adapter.health(_ctx(row))
         return public_view(row, step, health)
 
     async def cancel(self, *, account_id: int, connection_id: str) -> dict:

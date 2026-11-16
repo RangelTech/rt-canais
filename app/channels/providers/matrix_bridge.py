@@ -103,6 +103,11 @@ def _attachments(raw: list[dict[str, Any]] | None) -> list[StepAttachment]:
     out = []
     for a in raw or []:
         mime = (a.get("info") or {}).get("mimetype", "")
+        nome = (a.get("filename") or "").lower()
+        if not mime and (a.get("type") == "m.image" or nome.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))):
+            mime = "image/jpeg" if nome.endswith((".jpg", ".jpeg")) else "image/png"  # captcha sem info
+        elif not mime and a.get("type") == "m.audio":
+            mime = "audio/mpeg"
         if a.get("content") and (mime.startswith("image/") or mime.startswith("audio/")):
             out.append(
                 StepAttachment(
@@ -331,9 +336,23 @@ class MatrixBridgeAdapter:
         except ProvisioningError as exc:
             if exc.errcode == "TIMEOUT":
                 return self._last[conn.id]
+            # O bridge apaga o processo assim que o login termina. Se a conclusao caiu entre duas
+            # esperas, a proxima volta "Login not found": confere se o usuario ja tem login.
+            achado = await self.recover(conn)
+            if achado:
+                self._proc.pop(conn.id, None)
+                return StepView(state=State.CONNECTED, step=Step(step_id=cur["step_id"], kind="complete"), login_id=achado)
             raise ProviderError(error_code_for(exc, "timeout")) from exc
         raw.setdefault("login_id", cur["process"])
         return self._remember(conn, raw)
+
+    async def recover(self, conn: ConnectionCtx) -> str | None:
+        """Login ja concluido no bridge para o usuario desta conexao (cada conexao tem o seu usuario Matrix)."""
+        try:
+            logins = await self._c.logins(self._user(conn))
+        except (ProvisioningError, ProviderError):
+            return None
+        return logins[0] if logins else None
 
     async def cancel_login(self, conn: ConnectionCtx) -> None:
         cur = self._proc.pop(conn.id, None)
