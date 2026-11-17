@@ -9,6 +9,8 @@ outro tenant sao ignoradas (nunca ha mapeamento cruzado).
 from __future__ import annotations
 
 import re
+import contextvars
+import hashlib
 import secrets
 from datetime import UTC, datetime
 from typing import Any
@@ -240,7 +242,7 @@ class MatrixSender:
         content: dict[str, Any] = {"msgtype": "m.text", "body": text}
         if reply_to:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-        txn = secrets.token_hex(8)
+        txn = _txn("texto")
         url = (
             f"{settings.matrix_homeserver_url}/_matrix/client/v3/rooms/{room}/send/"
             f"m.room.message/{txn}"
@@ -281,13 +283,23 @@ class MatrixSender:
                     content["info"]["duration"] = ms
                     content["org.matrix.msc1767.audio"] = {"duration": ms}
                     content["org.matrix.msc3245.voice"] = {}
-                r = await http.put(f"{base}/_matrix/client/v3/rooms/{room}/send/m.room.message/{secrets.token_hex(8)}",
+                r = await http.put(f"{base}/_matrix/client/v3/rooms/{room}/send/m.room.message/{_txn('midia:' + nome)}",
                                    params={"user_id": conn.matrix_user}, json=content, headers=h)
         except httpx.HTTPError as exc:
             raise ProviderError("provider_unavailable") from exc
         if r.status_code >= 400:
             raise ProviderError("provider_unavailable", str(r.status_code))
         return r.json()["event_id"]
+
+
+# Chave de idempotência do envio em curso (o Gateway._deliver_send define). Reenvio da mesma mensagem usa o mesmo txn:
+# se a 1a tentativa já entregou mas voltou erro/timeout, o Synapse devolve o mesmo evento em vez de mandar de novo.
+IDEMPOTENCIA: contextvars.ContextVar[str] = contextvars.ContextVar("idempotencia_envio", default="")
+
+
+def _txn(parte: str) -> str:
+    chave = IDEMPOTENCIA.get()
+    return hashlib.sha256(f"{chave}:{parte}".encode()).hexdigest()[:32] if chave else secrets.token_hex(8)
 
 
 MAX_ANEXO = 16 * 1024 * 1024
