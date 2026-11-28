@@ -61,6 +61,10 @@ class SimBridge:
         if parts[:3] == ["v3", "login", "cancel"]:
             self.procs.pop(parts[3], None)
             return httpx.Response(200, json={})
+        if parts[:2] == ["v3", "create_dm"]:
+            # contato pelo telefone: id = só os dígitos; a sala é inventada (no simulador não há Matrix)
+            num = "".join(ch for ch in parts[2] if ch.isdigit())
+            return httpx.Response(200, json={"id": num, "name": num, "dm_room_mxid": f"!dm{num}:sim.local"})
         if path == "/v3/logins":
             return httpx.Response(200, json={"login_ids": self.logins.get(user, [])})
         if parts[:2] == ["v3", "logout"]:

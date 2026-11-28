@@ -63,6 +63,12 @@ class FakeBridge:
         if parts[:3] == ["v3", "login", "cancel"]:
             self.procs.pop(parts[3], None)
             return httpx.Response(200, json={})
+        if parts[:2] == ["v3", "create_dm"]:
+            self.create_dm_params = dict(req.url.params)
+            num = "".join(ch for ch in parts[2] if ch.isdigit())
+            if num.startswith("5500"):
+                return self._err(404, "M_NOT_FOUND", "not on whatsapp")
+            return httpx.Response(200, json={"id": num, "name": num, "dm_room_mxid": f"!dm{num}:test.local"})
         if path == "/v3/logins":
             return httpx.Response(200, json={"login_ids": self.logins.get(user, [])})
         if parts[:2] == ["v3", "logout"]:

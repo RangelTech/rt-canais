@@ -47,6 +47,7 @@ class ProvisioningClient:
         user_id: str,
         body: dict[str, Any] | None = None,
         timeout: float | None = None,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(
@@ -55,7 +56,7 @@ class ProvisioningClient:
                 resp = await http.request(
                     method,
                     self._base + path,
-                    params={"user_id": user_id},
+                    params={"user_id": user_id, **(params or {})},
                     json=body if body is not None else ({} if method == "POST" else None),
                     headers={"Authorization": f"Bearer {self._secret}"},
                 )
@@ -99,6 +100,13 @@ class ProvisioningClient:
 
     async def logout(self, user_id: str, login_id: str) -> None:
         await self._request("POST", f"/v3/logout/{login_id}", user_id)
+
+    async def create_dm(self, user_id: str, login_id: str, identifier: str) -> dict[str, Any]:
+        """Abre (ou acha) a conversa direta com um contato pelo identificador da rede (WhatsApp: telefone).
+        Responde {id: <id do contato na rede>, dm_room_mxid: <sala do portal>, ...}."""
+        from urllib.parse import quote
+
+        return await self._request("POST", f"/v3/create_dm/{quote(identifier, safe='')}", user_id, params={"login_id": login_id})
 
     async def whoami(self, user_id: str) -> dict[str, Any]:
         return await self._request("GET", "/v3/whoami", user_id)
