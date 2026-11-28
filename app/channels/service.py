@@ -394,6 +394,35 @@ class Gateway:
     async def on_recovered(self, connection_id: str) -> None:
         await self.on_state_event(connection_id, State.CONNECTED, "")
 
+    # --- conversa nova (o contato nunca escreveu) --------------------------------
+    async def start_conversation(self, *, account_id: int, connection_id: str, phone: str) -> dict:
+        """O produto quer falar primeiro (ex.: aviso de cobrança): abre a conversa pelo telefone e liga a sala.
+        Devolve o conversation_ref para usar no /send."""
+        row = self._row(connection_id, account_id)
+        if State(row["state"]) not in (State.CONNECTED, State.DEGRADED):
+            raise GatewayError(409, "not_connected")
+        adapter = self._adapter(row["provider"])
+        if not hasattr(adapter, "start_conversation"):
+            raise GatewayError(422, "not_supported")
+        digitos = "".join(ch for ch in phone if ch.isdigit())
+        if len(digitos) < 10:
+            raise GatewayError(422, "invalid_phone")
+        try:
+            conv, room = await adapter.start_conversation(_ctx(row), "+" + digitos)
+        except ProviderError as exc:
+            raise GatewayError(422 if exc.error_code == "contact_not_found" else 502, exc.error_code) from exc
+        if room:
+            ligada = store.room_binding(room)
+            if not ligada:
+                # o puppet da conexão entra na sala do portal (o convite do bridge pode chegar depois)
+                if self.matrix is not None and row.get("matrix_user"):
+                    await self.matrix.join(row["matrix_user"], room)
+                store.bind_room(room_id=room, connection_id=row["id"], account_id=account_id, conversation=conv)
+            elif not ligada.get("conversation_external_id"):
+                store.set_room_conversation(room, conv)
+        store.audit(account_id=account_id, connection_id=row["id"], actor_id="produto", action="conversation.start", detail={"conversa": conv})
+        return {"conversation_ref": conv}
+
     # --- saida -----------------------------------------------------------------
     async def send(
         self,

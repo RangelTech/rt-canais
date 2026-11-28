@@ -6,7 +6,7 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.channels import appservice, store
 from app.channels.providers.matrix_bridge import MatrixBridgeAdapter
@@ -320,6 +320,20 @@ def delivery(cid: str, body: DeliveryIn, gw: Gateway = Depends(get_gateway)):
             secret=body.webhook_secret,
             inbox_ref=body.inbox_ref,
         )
+    except GatewayError as exc:
+        raise _guard(exc) from exc
+
+
+class ConversaIn(BaseModel):
+    account_id: int
+    phone: str = Field(min_length=10, max_length=20)
+
+
+@router.post("/connections/{cid}/conversations", dependencies=[Depends(require_token)])
+async def start_conversation(cid: str, body: ConversaIn, gw: Gateway = Depends(get_gateway)):
+    """Abre conversa com um telefone que ainda não escreveu (WhatsApp). Devolve o conversation_ref."""
+    try:
+        return await gw.start_conversation(account_id=body.account_id, connection_id=cid, phone=body.phone)
     except GatewayError as exc:
         raise _guard(exc) from exc
 

@@ -463,3 +463,30 @@ async def test_media_so_da_propria_conexao(env, api, monkeypatch):
     assert r.status_code == 200 and r.content == b"audio"
     r = api.get(f"/internal/channels/connections/{c['id']}/media", params={"account_id": 2, "mxc": "mxc://x/y"})
     assert r.status_code == 404
+
+
+def test_conversa_nova_pelo_telefone(env, api):
+    """O produto fala primeiro (aviso de cobrança): abre a conversa pelo telefone e o /send usa o ref devolvido."""
+    c = connect(api, provider="whatsapp")
+    env.bridge.qr_scanned = True
+    api.get(f"/internal/channels/connections/{c['id']}?account_id=1")
+    r = api.post(f"/internal/channels/connections/{c['id']}/conversations", json={"account_id": 1, "phone": "(62) 99999-0000"})
+    assert r.status_code == 200, r.text
+    ref = r.json()["conversation_ref"]
+    assert ref == "62999990000"
+    assert env.bridge.create_dm_params.get("login_id")
+    assert store.room_for_conversation(c["id"], ref) == "!dm62999990000:test.local"
+    s = api.post(f"/internal/channels/connections/{c['id']}/send", json={"account_id": 1, "idempotency_key": "k1", "conversation_ref": ref, "text": "Sua parcela vence amanhã"})
+    assert s.status_code == 200, s.text
+    assert env.sender.sent[-1][1:] == (ref, "Sua parcela vence amanhã")
+    # repetir não duplica a sala
+    assert api.post(f"/internal/channels/connections/{c['id']}/conversations", json={"account_id": 1, "phone": "62999990000"}).json()["conversation_ref"] == ref
+    # número fora do WhatsApp e outra empresa
+    assert api.post(f"/internal/channels/connections/{c['id']}/conversations", json={"account_id": 1, "phone": "5500999990000"}).status_code == 422
+    assert api.post(f"/internal/channels/connections/{c['id']}/conversations", json={"account_id": 2, "phone": "62999990000"}).status_code in (403, 404)
+
+
+def test_conversa_nova_exige_conectado(env, api):
+    c = connect(api, provider="whatsapp")
+    r = api.post(f"/internal/channels/connections/{c['id']}/conversations", json={"account_id": 1, "phone": "62999990000"})
+    assert r.status_code == 409

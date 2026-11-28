@@ -384,6 +384,22 @@ class MatrixBridgeAdapter:
             raise ProviderError("provider_unavailable", "sem canal de saida matrix")
         return await self._sender(conn, conversation_ref, text, attachments, reply_to)
 
+    async def start_conversation(self, conn: ConnectionCtx, phone: str) -> tuple[str, str | None]:
+        """Conversa nova com um telefone (o contato nunca escreveu): o bridge cria o portal.
+        Devolve (conversation_ref = id do contato na rede, sala Matrix do portal)."""
+        if not conn.gateway_login_id:
+            raise ProviderError("not_connected", "conexao sem login no bridge")
+        try:
+            r = await self._c.create_dm(self._user(conn), str(conn.gateway_login_id), phone)
+        except ProvisioningError as exc:
+            if exc.status in (400, 404):
+                raise ProviderError("contact_not_found", exc.message or exc.errcode) from exc
+            raise ProviderError(error_code_for(exc)) from exc
+        conv = str(r.get("id") or "")
+        if not conv:
+            raise ProviderError("contact_not_found", "bridge nao devolveu o contato")
+        return conv, (r.get("dm_room_mxid") or None)
+
     async def sync(self, conn: ConnectionCtx, since_days: int) -> None:
         return None  # backfill e feito pelo proprio bridge (config backfill); progresso via eventos
 
